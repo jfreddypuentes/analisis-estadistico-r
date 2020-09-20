@@ -1,0 +1,256 @@
+---
+title: "Parcial Final - Análisis Encuesta Multipropósito Bogotá D.C."
+author: "Jhon Freddy Puentes Nuñez"
+output:
+  word_document: default
+---
+
+```{r message=FALSE, warning=FALSE}
+# Cargar librerias necesarias.
+library(readr)
+library(distributions3)
+library(sqldf)
+library(reticulate)
+library(dplyr)
+```
+
+```{r message=FALSE}
+# Cargar datos necesarios.
+hogares <- read_delim("hogares.csv", ";", escape_double = FALSE, trim_ws = TRUE)
+viviendas <- read_csv("viviendas.csv")
+```
+
+# 1. Use la encuesta multipropósito de bogotá (variables adicionales hogares)
+
+## a. Calcule un intervalo de confianza para la estimación vía bootstrap del ingreso promedio o si prefiere un intervalo de confianza con la distribución t-student.
+```{r}
+# Intervalo de confianza metodo 1: Quantile
+variable_objetivo_y <- as.numeric(as.character(hogares$INGRESOS_HOG))
+n <- length(variable_objetivo_y)
+
+lim_inf <- mean(variable_objetivo_y) + quantile(StudentsT(df = 9), 0.05 / 2) * sd(variable_objetivo_y) / sqrt(n)
+lim_sup <- mean(variable_objetivo_y) + quantile(StudentsT(df = 9), 1 - 0.05 / 2) * sd(variable_objetivo_y) / sqrt(n)
+
+paste("(",round(lim_inf,0)," , ",round(lim_sup,0),")")
+```
+
+```{r}
+# Intervalo de confianza metodo 2: T-student
+t.test(variable_objetivo_y, conf.level = 0.95)$"conf.int"
+```
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+# Para boostrap
+py_install("pandas")
+py_install("numpy")
+```
+
+
+```{python}
+# Intervalo de confianza metodo 3: Boostraping in Python
+import numpy as np
+import pandas as pd
+
+data = pd.read_csv('hogares.csv', sep=';', encoding = "ISO-8859-1")
+sample_means = []
+np.random.seed(12345)
+
+for _ in range(1000):
+    sample_means.append(np.random.choice(data['INGRESOS_HOG'], size=1000).mean())
+    
+simulated_mean = round(np.mean(sample_means),0)
+simulated_se = round(np.std(sample_means)/(1000 ** 0.5),0)
+
+print('({} , {})'.format(round(simulated_mean-(1.96*simulated_se), 0), round(simulated_mean+(1.96*simulated_se), 0)))
+```
+
+## Intervalos resultantes:
+* Método 1: ( 3145011  ,  3201357 )
+* Método 2: ( 3148774  ,  3197594 )
+* Método 3: ( 3167191  ,  3183773 )
+
+
+## b. ¿Es el ingreso promedio de Chía más grande que el de Bogotá? Realice una prueba de hipótesis de diferencia de medias para responder a esta pregunta (puede usar pruebas de permutación si lo prefiere).
+
+```{r}
+# Consulta y análisis de los ingresos para Chia y Bogotá.
+ingreso_hogares_bogota_chia <- sqldf("SELECT h.INGRESOS_HOG, v.DPTOMPIO, 
+                                     case when v.DPTOMPIO = 11001 then 'BOGOTA' ELSE 'CHIA' END AS CIUDAD
+                                     FROM hogares h 
+                                     INNER JOIN viviendas v on v.DIRECTORIO = h.DIRECTORIO
+                                     WHERE v.DPTOMPIO IN (25175, 11001)")
+
+boxplot(ingreso_hogares_bogota_chia$INGRESOS_HOG ~ ingreso_hogares_bogota_chia$CIUDAD
+        ,col = c("red", "green")
+        ,xlab='Ciudad'
+        ,ylab='Ingresos'
+        ,main='Ingresos para Bogotá y Chia')
+```
+
+```{r}
+# Separo los ingresos por ciduad.
+ingreso_hogares_bogota <- ingreso_hogares_bogota_chia %>% filter(ingreso_hogares_bogota_chia$DPTOMPIO == 11001)
+ingreso_hogares_chia <- ingreso_hogares_bogota_chia %>% filter(ingreso_hogares_bogota_chia$DPTOMPIO == 25175)
+```
+
+### Reviso la varianza:
+```{r}
+paste("Varianza del ingreso en Bogotá:", var(ingreso_hogares_bogota$INGRESOS_HOG))
+paste("Varianza del ingreso en Chia:", var(ingreso_hogares_chia$INGRESOS_HOG))
+```
+* Es de  notar que ambos conjuntos tienen varianzas diferentes. por lo tanto, hago un prueba de hipotesis por diferencia de medias con varianzas distitas.
+
+### Prueba de hipotesis
+```{r}
+# HIPOTESIS:
+# H0: La diferencia de medias es igual a 0. m1 - m2 = 0 (nula)
+# H1: Promedio de ingreso de Bogotá < Promedio de ingreso de Chía.  (m1 - m2 < 0) (alternativa)
+
+mu1 = mean(ingreso_hogares_bogota$INGRESOS_HOG) # 3.584.128
+mu2 = mean(ingreso_hogares_chia$INGRESOS_HOG)   # 3.808.024
+
+varianza_son_iguales = var(ingreso_hogares_bogota$INGRESOS_HOG) == var(ingreso_hogares_chia$INGRESOS_HOG)
+
+t.test(x=ingreso_hogares_bogota$INGRESOS_HOG,
+       y=ingreso_hogares_chia$INGRESOS_HOG, 
+       alternative="less", 
+       mu=0,
+       paired=FALSE,
+       var.equal=varianza_son_iguales, 
+       conf.level=0.95)
+```
+* La diferenia de medias de los 2 grupos y entre los grupos no es alta, el p-value es menor que 0.05 (valor máximo permitido como limite para este experimento) y la hipotesis alternativa es verdadera entonces, el ingreso de chia es más alto que el de Bogotá acorde a los datos presentados y con un nivel de confianza del 95%.
+
+# 2. Elabore un modelo de regresión lineal múltiple que pronostique el ingreso del hogar con el total del ïndice de Pobreza Multidimensional, el total de puntaje y otras variables que considere relevante.
+
+## a. Realice un análisis exploratorio de datos de la información. Visualice con un diagrama de dispersión la relación del ingreso con las otras variable del modelo.
+
+## Variables del modelo:
+```{r}
+# Se han elegido estas variables dado su alta correlación con la variable objetivo. (ver siguiente chunk)
+var_ingreso_per_capita <- hogares$INGRESOS_PER_CAPITA
+var_personas_gasto <- hogares$PER_UG
+var_indice_pobreza <- hogares$IPM
+var_total_puntaje <- hogares$TOTAL_PUNTAJE
+var_objetivo_ingreso <- hogares$INGRESOS_HOG
+
+x = (var_ingreso_per_capita * var_personas_gasto) + var_indice_pobreza + var_total_puntaje
+y = var_objetivo_ingreso
+
+scatter.smooth(x = x
+               , y = y
+               , main = "Regresión Lineal para el modelo"
+               , xlab = 'Variables independientes'
+               , ylab = 'Ingreso'
+               , lpars =list(col = "blue", lwd = 3, lty = 3))
+```
+
+## Correlación de las variables
+```{r}
+paste("La correlación entre x, y es de: ", cor(y,x))
+```
+* Podemos decir que las variables elegidas para el modelo son correctas ya que están bastante correlacionadas. Es de entender que los datos permiten que haya esta correlación dada la clara linealidad y dependencia del valor de ingreso con el ingreso percapita y las personas. 
+
+
+## Definición modelo:
+```{r}
+modelo <- lm(y ~ x, data = hogares)
+summary(modelo)
+```
+
+### Pruebas del modelo
+```{r warning=FALSE}
+# Pruebas iteracion 0
+datos1 <-data.frame(
+                   INGRESOS_PER_CAPITA = c(5674556.000, 843166.690, 1112500.000, 1206666.600, 4166.667), 
+                   PER_UG              = c(3,   4,    2,  3,  1),
+                   IPM                 = c(0.10,   0.10,  0.00, 0.20, 0.20),
+                   TOTAL_PUNTAJE       = c(100.00, 93.08, 98.82, 88.95, 93.34)
+)
+
+# Datos esperados.
+prediccion_esperada1 <- c(17023668.000, 3372666.800, 2225000.000, 3620000.000, 4166.667)
+
+# Imprimir prediccion vs datos esperados 4166.667
+head(predict(modelo, datos1))
+prediccion_esperada1
+```
+* Las predicciones son bastantes buenas. Esto obedece a la alta correlación de las variables.
+
+## Modelo con entrenamiento 70% / 30% y errores
+```{r warning=FALSE}
+# 70%
+set.seed(12345)
+train1 <- hogares %>% sample_frac(0.7)
+modelo_train1 <- lm(y ~ x, data = train1)
+
+# 30%
+test1 <- hogares %>% sample_frac(0.3)
+prediccion1 <- predict(modelo_train1, test1)
+
+# Error absoluto medio:
+error_absoluto_medio1 <- mean(abs(test1$INGRESOS_HOG - prediccion1))
+ 
+# Error cuadrático medio:
+error_cuadratico_medio1 <-  mean((test1$INGRESOS_HOG - prediccion1)^2)
+
+# Raiz de cuadrática media:
+raiz_error_cuadratico_medio1 <- sqrt(error_cuadratico_medio1)
+```
+
+
+```{r}
+paste("error_absoluto_medio:", round(error_absoluto_medio1,0))
+paste("error_cuadratico_medio1:", round(error_cuadratico_medio1,0))
+paste("raiz_error_cuadratico_medio1:", round(raiz_error_cuadratico_medio1,0))
+```
+
+### Pruebas
+```{r warning=FALSE}
+# datos de prueba:
+datos2 <-data.frame(
+                   INGRESOS_PER_CAPITA = c(5674556.000, 843166.690, 1112500.000, 1206666.600, 4166.667), 
+                   PER_UG              = c(3,   4,    2,  3,  1),
+                   IPM                 = c(0.10,   0.10,  0.00, 0.20, 0.20),
+                   TOTAL_PUNTAJE       = c(100.00, 93.08, 98.82, 88.95, 93.34)
+)
+
+# Datos esperados para los datos de prueba:
+prediccion_esperada2 <- c(17023668.000, 3372666.800, 2225000.000, 3620000.000, 4166.667)
+
+# Prediccion:
+head(predict(modelo_train1, datos2))
+prediccion_esperada2
+
+# summary(modelo_train1, correlation = T, symbolic.cor=T, signif.stars=T)
+```
+* La predicción sigue manteniendose bastante buena respecto al valor esperado.
+
+
+## b. Estime los parámetros del modelo.
+```{r}
+modelo_train1
+```
+* Se puede observar que el coeficiente del producto entre la variable INGRESOS_PER_CAPITA y PER_UG es 1. Y tiene sentido ya que son las dos variables que inciden directamente sobre la variable dependiente y y que hacen que la regresión se ajuste tanto.
+
+
+## c. ¿Cuál de las variables es significativa?
+```{r}
+summary(modelo_train1)
+```
+* Para este modelo todas las variables elegidas son significativas, esto se garantiza por la alta correlación entre ellas y tambien el t value ya que es bastante alto y nos indica el bajo nivel de probabilidad de que sean cero por aleatoriedad. De otro lado, tenemos un p-value de 0.00000000000000022 lo que hace que el modelo y sus variables son significativas.
+
+## d. ¿Cuánto es el R cuadrado?
+* Observando el resumen del modelo, el R-cuadrado es de 1
+
+
+## d ¿Qué opina del grado de explicación del modelo?
+* Dado que el grado de explicación del modelo está dado por el valor del R-cuadrado, opino que el modelo está perfectamente ajustado a los datos. No es del todo bueno pero no es tan malo considerando que es una regresión lineal y considerando que el valor a predecir resulta de un producto lineal directo de dos de las variables independientes que se encuentran en los datos.
+
+
+
+
+
+
+
+
