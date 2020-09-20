@@ -1,6 +1,6 @@
 ---
-title: "Parcial Final - Análisis Encuesta Multipropósito Bogotá D.C."
-author: "Jhon Freddy Puentes Nuñez"
+title: "Análisis Encuesta Multipropósito Bogotá D.C."
+author: "Jhon Puentes"
 output:
   word_document: default
 ---
